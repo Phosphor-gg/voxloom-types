@@ -445,7 +445,7 @@ impl Tier {
 
     pub fn get_description(&self) -> &str {
         match self {
-            Tier::Free => "Ten minutes to see whether the transcript holds up.",
+            Tier::Free => "Ten minutes a month to see whether the transcript holds up.",
             Tier::Solo => "For one person keeping up with their own channel.",
             Tier::Studio => "For interviews, podcasts and long-form, at volume.",
             Tier::Agency => "For teams and agencies running everything through the API.",
@@ -529,7 +529,11 @@ impl Tier {
         let mut features = Vec::new();
         let minutes = credits_to_standard_minutes(self.monthly_credits());
         features.push(match self {
-            Tier::Free => format!("{} minutes, one time", minutes),
+            // Not "one time": the free allowance resets with everyone else's,
+            // on the 30 day cycle in credits_service::check_and_reset_if_needed.
+            // Saying it never comes back understated the free tier and
+            // contradicted the same page's own subheading.
+            Tier::Free => format!("{} minutes of transcription a month", minutes),
             _ if minutes >= 60 => format!("{} hours of transcription a month", minutes / 60),
             _ => format!("{} minutes of transcription a month", minutes),
         });
