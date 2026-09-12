@@ -159,6 +159,34 @@ impl JobFailureKind {
             Self::Internal => "Something went wrong on our side.",
         }
     }
+
+    /// The message once retrying has been given up on.
+    ///
+    /// [`message`](Self::message) invites a retry for the transient kinds,
+    /// which is right until the attempt cap is reached and `retryable` goes
+    /// false. Telling someone a failure is "safe to retry" next to a disabled
+    /// retry button is worse than saying nothing: they conclude the button is
+    /// broken rather than that we gave up. For kinds that were never
+    /// retryable this is the same text as `message`, because nothing was
+    /// promised.
+    pub fn exhausted_message(&self) -> &'static str {
+        match self {
+            Self::TranscriptionFailed => {
+                "Transcription failed on every attempt. Something about this \
+                 recording is defeating our pipeline; send us the job id and \
+                 we will look at it."
+            }
+            Self::Timeout => {
+                "Fetching the media timed out on every attempt. The source is \
+                 either very slow or refusing us."
+            }
+            Self::Internal => {
+                "Something went wrong on our side, on every attempt. Send us \
+                 the job id."
+            }
+            other => other.message(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -410,6 +438,57 @@ mod tests {
         // A private video is never going to work, so a client must not retry it.
         assert!(!JobFailureKind::MediaUnavailable.is_retryable());
         assert!(JobFailureKind::Timeout.is_retryable());
+    }
+
+    /// Every failure kind, so a new one cannot skip the checks below.
+    const ALL_FAILURE_KINDS: &[JobFailureKind] = &[
+        JobFailureKind::MediaUnavailable,
+        JobFailureKind::MediaTooLong,
+        JobFailureKind::UnsupportedSource,
+        JobFailureKind::NoSpeech,
+        JobFailureKind::InsufficientCredits,
+        JobFailureKind::TranscriptionFailed,
+        JobFailureKind::Timeout,
+        JobFailureKind::Internal,
+    ];
+
+    #[test]
+    fn only_a_retryable_kind_may_invite_a_retry() {
+        // A job that has burned through its attempts reports retryable=false
+        // while still carrying `message()`. When that text said "safe to
+        // retry" next to a disabled button, the product looked broken rather
+        // than honest, which is what `exhausted_message` exists to fix.
+        for kind in ALL_FAILURE_KINDS {
+            if !kind.is_retryable() {
+                assert!(
+                    !kind.message().to_lowercase().contains("retry"),
+                    "{kind:?} is not retryable but its message invites one"
+                );
+            }
+            assert!(
+                !kind.exhausted_message().to_lowercase().contains("safe to retry"),
+                "{kind:?} has given up but still calls a retry safe"
+            );
+        }
+    }
+
+    #[test]
+    fn a_kind_that_never_retried_says_the_same_thing_either_way() {
+        // Nothing was promised, so there is nothing to walk back.
+        for kind in ALL_FAILURE_KINDS.iter().filter(|k| !k.is_retryable()) {
+            assert_eq!(kind.message(), kind.exhausted_message(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn giving_up_changes_the_wording_for_every_transient_kind() {
+        for kind in ALL_FAILURE_KINDS.iter().filter(|k| k.is_retryable()) {
+            assert_ne!(
+                kind.message(),
+                kind.exhausted_message(),
+                "{kind:?} is retryable, so the two messages must differ"
+            );
+        }
     }
 
     #[test]
