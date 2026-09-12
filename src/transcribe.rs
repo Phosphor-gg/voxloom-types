@@ -155,17 +155,6 @@ impl TranscriptionModel {
         }
     }
 
-    /// Word error rate on the internal benchmark set, as a percentage. Quoted
-    /// on the accuracy page; see the benchmark doc for methodology.
-    pub fn benchmark_wer(&self) -> f64 {
-        match self {
-            Self::Auto => 4.1,
-            Self::Thread => 6.8,
-            Self::Weave => 4.1,
-            Self::Tapestry => 2.9,
-        }
-    }
-
     /// Roughly how many seconds of media this model transcribes per second of
     /// wall clock on the production GPU. Used for queue-time estimates only.
     pub fn realtime_factor(&self) -> f64 {
