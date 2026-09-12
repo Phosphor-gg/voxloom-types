@@ -18,11 +18,15 @@ pub const TRIAL_PERIOD_DAYS: u32 = 7;
 
 /// Credits per 1 GBP for pay-as-you-go minute packs.
 ///
-/// 1,500 credits is 12.5 minutes at the standard [`TranscriptionModel::Weave`]
-/// rate, i.e. about £4.80 per hour of media. Subscriptions are cheaper per
-/// minute than this on purpose — packs exist for the month somebody overruns,
-/// not as the main way to buy.
-pub const CREDITS_PER_GBP: f64 = 1_500.0;
+/// 750 credits is 12.5 minutes, i.e. about £4.80 per hour of media.
+/// Subscriptions are cheaper per minute than this on purpose: packs exist for
+/// the month somebody overruns, not as the main way to buy.
+///
+/// This was 1,500 when a credit was half a second at the standard rate. It
+/// halved with the model multiplier so that a pound still buys the same amount
+/// of audio. Leaving it would have quietly cut pack prices in half, which a
+/// test caught.
+pub const CREDITS_PER_GBP: f64 = 750.0;
 
 pub fn credits_to_gbp(credits: i64) -> f64 {
     credits as f64 / CREDITS_PER_GBP
@@ -46,12 +50,11 @@ pub fn format_credits_as_gbp(credits: i64) -> String {
 /// quoting minutes without naming the model would be a lie by omission, since
 /// Tapestry consumes twice as many and Thread half as many.
 pub fn credits_to_standard_minutes(credits: i64) -> i64 {
-    let per_minute = CREDITS_PER_MINUTE * TranscriptionModel::Weave.credit_multiplier();
-    credits.max(0) / per_minute
+    credits.max(0) / CREDITS_PER_MINUTE
 }
 
 pub fn standard_minutes_to_credits(minutes: i64) -> i64 {
-    minutes * CREDITS_PER_MINUTE * TranscriptionModel::Weave.credit_multiplier()
+    minutes * CREDITS_PER_MINUTE
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -484,8 +487,6 @@ impl Tier {
         match self {
             Tier::Free => E::free_tier(),
             Tier::Solo => vec![
-                E::ThreadModel,
-                E::WeaveModel,
                 // Speaker labels belong on the entry paid plan, not above it:
                 // interviews and podcasts are the common case in this niche,
                 // and a plan that cannot tell two voices apart does not solve
@@ -498,9 +499,6 @@ impl Tier {
                 E::ShareLinks,
             ],
             Tier::Studio => vec![
-                E::ThreadModel,
-                E::WeaveModel,
-                E::TapestryModel,
                 E::SpeakerDiarization,
                 E::AiCleanup,
                 E::AiSummary,
@@ -878,7 +876,6 @@ mod tests {
         // A free tier with no model is a signup form, not a trial.
         let free = StripeSubscriptionInfo::free();
         assert!(!free.available_models().is_empty());
-        assert!(free.has(Entitlement::WeaveModel));
         // But it must not hand out the things people pay for.
         assert!(!free.has(Entitlement::SpeakerDiarization));
         assert!(!free.has(Entitlement::ApiAccess));

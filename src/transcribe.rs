@@ -17,10 +17,15 @@ pub const CREDITS_PER_MEDIA_SECOND: i64 = 1;
 
 pub const CREDITS_PER_MINUTE: i64 = 60 * CREDITS_PER_MEDIA_SECOND;
 
-/// Ceiling-divide media seconds into billable credits for a given model.
-pub fn credits_for_media(duration_secs: f64, model: TranscriptionModel) -> i64 {
+/// Ceiling-divide media seconds into billable credits.
+///
+/// One credit is one second of audio. This took a model multiplier before,
+/// which meant a balance could not be stated as a length of audio without
+/// naming a model first, and every place that forgot produced a figure that
+/// was wrong by a factor of two.
+pub fn credits_for_media(duration_secs: f64) -> i64 {
     let seconds = duration_secs.ceil().max(0.0) as i64;
-    seconds * CREDITS_PER_MEDIA_SECOND * model.credit_multiplier()
+    seconds * CREDITS_PER_MEDIA_SECOND
 }
 
 /// Render a number of seconds as human time, e.g. "1h 24m" or "3m 20s".
@@ -44,16 +49,12 @@ pub fn format_duration(secs: i64) -> String {
 
 /// Render a *credit* balance as the media time it buys, e.g. "1h 24m".
 ///
-/// Credits are not seconds: a second of audio costs
-/// [`CREDITS_PER_MEDIA_SECOND`] times the model's multiplier, so the same
-/// balance buys twice as long on Thread as on Tapestry. Every customer-facing
-/// figure is quoted at the standard rate (Weave), matching
-/// `pricing::credits_to_standard_minutes` — dividing by
-/// `CREDITS_PER_MEDIA_SECOND` alone would state a balance at Thread's rate and
-/// overstate what most people will actually get by a factor of two.
+/// A credit is a second, so this is [`format_duration`] with a floor. It stays
+/// a separate function because the two arguments mean different things, and
+/// conflating them is precisely the bug that shipped while credits still
+/// carried a model multiplier.
 pub fn format_credits_as_time(credits: i64) -> String {
-    let per_second = CREDITS_PER_MEDIA_SECOND * TranscriptionModel::Weave.credit_multiplier();
-    format_duration(credits.max(0) / per_second)
+    format_duration(credits.max(0) / CREDITS_PER_MEDIA_SECOND)
 }
 
 /// Minutes a credit balance is worth, rounded down. For "N minutes included"
@@ -94,39 +95,32 @@ pub const MAX_BATCH_VIDEOS: usize = 25;
 pub const DEMO_ANON_WEEKLY_SECS: i64 = 5 * 60;
 pub const DEMO_AUTHED_WEEKLY_SECS: i64 = 30 * 60;
 
-/// Transcription models, cheapest to most capable.
+/// The transcription model.
 ///
-/// Named for the brand's weaving metaphor and ordered the same way as
-/// [`TranscriptionModel::credit_multiplier`], which is what `Auto` walks when
-/// it picks a model for the caller's remaining balance.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// One model, not a ladder. Three tiers meant every caller had to pick a
+/// quality level before they knew what the audio was like, every price had to
+/// be quoted per tier, and the same balance meant a different number of
+/// minutes depending on a choice made later. The enum survives as a single
+/// variant because the wire format names the model and a second one may exist
+/// one day; nothing may branch on it.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum TranscriptionModel {
-    /// Pick a model from the caller's remaining balance. Must be resolved to a
-    /// concrete model before any billing decision.
-    Auto,
-    /// Fast CTC model. Best for clean single-speaker audio where turnaround
-    /// matters more than punctuation nuance.
-    Thread,
-    /// Whisper-class encoder-decoder. The default: strong punctuation,
-    /// casing and multilingual coverage.
+    /// Whisper-large-v3 class: punctuation, casing, 101 languages, with the
+    /// diarisation and cleanup passes on top.
+    #[default]
     Weave,
-    /// Speech-LLM hybrid with a language-model decoder, plus diarisation and
-    /// an LLM cleanup pass. Highest accuracy, best on crosstalk and accents.
-    Tapestry,
 }
 
 impl TranscriptionModel {
     pub fn all_models() -> Vec<TranscriptionModel> {
-        vec![Self::Auto, Self::Thread, Self::Weave, Self::Tapestry]
+        vec![Self::Weave]
     }
 
+    /// Kept distinct from [`all_models`] because callers used it to mean
+    /// "everything except Auto". There is no Auto now, so the two agree.
     pub fn concrete_models() -> Vec<TranscriptionModel> {
-        vec![Self::Thread, Self::Weave, Self::Tapestry]
-    }
-
-    pub fn is_auto(&self) -> bool {
-        matches!(self, Self::Auto)
+        Self::all_models()
     }
 
     pub fn version(&self) -> &str {
@@ -134,12 +128,7 @@ impl TranscriptionModel {
     }
 
     pub fn base_name(&self) -> &str {
-        match self {
-            Self::Auto => "Auto",
-            Self::Thread => "Thread",
-            Self::Weave => "Weave",
-            Self::Tapestry => "Tapestry",
-        }
+        "Weave"
     }
 
     pub fn to_name(&self) -> String {
@@ -147,95 +136,26 @@ impl TranscriptionModel {
     }
 
     pub fn description(&self) -> &str {
-        match self {
-            Self::Auto => "Picks the best model your remaining balance affords.",
-            Self::Thread => "Fastest. Clean audio, one speaker, quick turnaround.",
-            Self::Weave => "Balanced default. Punctuation, casing, every language.",
-            Self::Tapestry => "Highest accuracy. Crosstalk, accents, speaker labels.",
-        }
+        "Punctuation, casing, speaker labels and 101 languages."
     }
 
-    /// Roughly how many seconds of media this model transcribes per second of
-    /// wall clock on the production GPU. Used for queue-time estimates only.
+    /// Roughly how many seconds of media this transcribes per second of wall
+    /// clock on the production GPU. Queue-time estimates only.
     pub fn realtime_factor(&self) -> f64 {
-        match self {
-            Self::Auto => 40.0,
-            Self::Thread => 120.0,
-            Self::Weave => 40.0,
-            Self::Tapestry => 14.0,
-        }
+        40.0
     }
 
-    /// Multiplier applied to [`CREDITS_PER_MEDIA_SECOND`].
-    pub fn credit_multiplier(&self) -> i64 {
-        match self {
-            Self::Auto => panic!("Auto must be resolved before calculating credits"),
-            Self::Thread => 1,
-            Self::Weave => 2,
-            Self::Tapestry => 4,
-        }
-    }
-
+    /// No per-model entitlement: there is nothing to gate, because there is
+    /// nothing to choose. Kept so call sites that ask need not care.
     pub fn entitlement(&self) -> Option<crate::entitlements::Entitlement> {
-        match self {
-            Self::Auto => None,
-            Self::Thread => Some(crate::entitlements::Entitlement::ThreadModel),
-            Self::Weave => Some(crate::entitlements::Entitlement::WeaveModel),
-            Self::Tapestry => Some(crate::entitlements::Entitlement::TapestryModel),
-        }
-    }
-
-    /// Resolve `Auto` to a concrete model from the remaining balance and the
-    /// models the caller is entitled to.
-    ///
-    /// Weighted allocation: with n models ranked best-to-worst carrying weights
-    /// n, n-1, ..., 1, the threshold for the model at rank r is
-    /// `sum(weights of everything worse) / total_weight * max_credits`. The
-    /// effect is that an account spends its best model early in the period and
-    /// degrades gracefully rather than stopping dead at zero.
-    pub fn resolve_auto(
-        remaining_credits: i64,
-        max_credits: i64,
-        allowed_models: &[TranscriptionModel],
-    ) -> TranscriptionModel {
-        let mut concrete: Vec<TranscriptionModel> =
-            allowed_models.iter().filter(|m| !m.is_auto()).copied().collect();
-
-        if concrete.is_empty() {
-            return Self::Thread;
-        }
-
-        concrete.sort_by_key(|m| std::cmp::Reverse(m.credit_multiplier()));
-
-        let n = concrete.len() as i64;
-        let total_weight = n * (n + 1) / 2;
-
-        let mut cumulative = 0i64;
-        for (i, model) in concrete.iter().enumerate() {
-            let threshold = if max_credits > 0 {
-                cumulative * max_credits / total_weight
-            } else {
-                0
-            };
-
-            if remaining_credits > threshold {
-                return *model;
-            }
-
-            cumulative += n - i as i64;
-        }
-
-        concrete.last().copied().unwrap_or(Self::Thread)
+        None
     }
 }
 
 impl Display for TranscriptionModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            Self::Auto => "auto",
-            Self::Thread => "thread",
             Self::Weave => "weave",
-            Self::Tapestry => "tapestry",
         };
         write!(f, "{}", s)
     }
@@ -246,10 +166,11 @@ impl FromStr for TranscriptionModel {
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input.to_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "thread" => Ok(Self::Thread),
-            "weave" => Ok(Self::Weave),
-            "tapestry" => Ok(Self::Tapestry),
+            // The retired tier names are accepted and mapped onto the one
+            // model rather than rejected: a saved script or an older client
+            // asking for a tier that no longer exists should still transcribe,
+            // and it now gets the good model either way.
+            "weave" | "auto" | "thread" | "tapestry" => Ok(Self::Weave),
             _ => Err(()),
         }
     }
@@ -568,15 +489,18 @@ impl TranscribeRequest {
         }
     }
 
-    /// Total credits this request costs for a given media duration, once the
-    /// model is concrete.
-    pub fn estimate_credits(&self, duration_secs: f64, model: TranscriptionModel) -> i64 {
+    /// Total credits this request costs for a given media duration.
+    ///
+    /// The base is one credit per second of audio. Features still carry their
+    /// own per-second surcharge, because they are extra work on the same
+    /// audio; the model no longer does, because there is only one.
+    pub fn estimate_credits(&self, duration_secs: f64) -> i64 {
         let seconds = duration_secs.ceil().max(0.0) as i64;
-        let mut per_second = model.credit_multiplier();
+        let mut per_second = CREDITS_PER_MEDIA_SECOND;
         for feature in &self.features {
             per_second += feature.surcharge_per_second();
         }
-        seconds * CREDITS_PER_MEDIA_SECOND * per_second
+        seconds * per_second
     }
 }
 
@@ -1047,14 +971,10 @@ mod tests {
             assert_eq!(serde_json::to_value(feature).unwrap(), wire);
         }
 
-        for (model, wire) in [
-            (TranscriptionModel::Auto, "auto"),
-            (TranscriptionModel::Thread, "thread"),
-            (TranscriptionModel::Weave, "weave"),
-            (TranscriptionModel::Tapestry, "tapestry"),
-        ] {
-            assert_eq!(serde_json::to_value(model).unwrap(), wire);
-        }
+        assert_eq!(
+            serde_json::to_value(TranscriptionModel::Weave).unwrap(),
+            "weave"
+        );
 
         for (format, wire) in [
             (ExportFormat::Txt, "txt"),
@@ -1109,7 +1029,7 @@ mod tests {
 
     #[test]
     fn one_standard_minute_of_credits_reads_as_one_minute() {
-        let one_minute = credits_for_media(60.0, TranscriptionModel::Weave);
+        let one_minute = credits_for_media(60.0);
         assert_eq!(format_credits_as_time(one_minute), "1m");
     }
 
@@ -1181,60 +1101,65 @@ mod tests {
     }
 
     #[test]
-    fn auto_degrades_through_the_models_as_the_balance_drains() {
-        let all = TranscriptionModel::concrete_models();
-        let max = 60_000;
-
-        // Full balance buys the best model; an empty one still returns
-        // something rather than failing the request.
-        assert_eq!(
-            TranscriptionModel::resolve_auto(max, max, &all),
-            TranscriptionModel::Tapestry
-        );
-        assert_eq!(
-            TranscriptionModel::resolve_auto(0, max, &all),
-            TranscriptionModel::Thread
-        );
-
-        // Entitlement-limited accounts never get offered a model they cannot use.
-        let limited = [TranscriptionModel::Thread, TranscriptionModel::Weave];
-        assert_eq!(
-            TranscriptionModel::resolve_auto(max, max, &limited),
-            TranscriptionModel::Weave
-        );
+    fn the_retired_tier_names_still_parse() {
+        // A saved script or an older SDK may still send "thread" or
+        // "tapestry". Rejecting those would fail a request that we can serve
+        // perfectly well, so they map onto the one model.
+        for name in ["weave", "auto", "thread", "tapestry", "WEAVE", "Tapestry"] {
+            assert_eq!(
+                name.parse::<TranscriptionModel>(),
+                Ok(TranscriptionModel::Weave),
+                "{name} should parse"
+            );
+        }
+        assert!("gpt-4".parse::<TranscriptionModel>().is_err());
     }
 
     #[test]
-    fn feature_surcharges_are_added_to_the_model_rate() {
-        let mut req = TranscribeRequest::youtube("dQw4w9WgXcQ");
-        // 60s on Weave: 60 * 1 * 2.
-        assert_eq!(req.estimate_credits(60.0, TranscriptionModel::Weave), 120);
+    fn a_credit_is_exactly_a_second_of_audio() {
+        // The whole point of dropping the tiers: a balance is a length of
+        // audio, with no model to name first.
+        assert_eq!(credits_for_media(1.0), CREDITS_PER_MEDIA_SECOND);
+        assert_eq!(credits_for_media(60.0), 60 * CREDITS_PER_MEDIA_SECOND);
+        // Part-seconds round up, so a 40 second clip is never billed as a
+        // minute and never billed as 39 seconds either.
+        assert_eq!(credits_for_media(39.2), 40 * CREDITS_PER_MEDIA_SECOND);
+        assert_eq!(credits_for_media(0.0), 0);
+        assert_eq!(credits_for_media(-3.0), 0);
+    }
 
-        // Diarisation and summary each add 1 per second: 60 * (2 + 1 + 1).
+    #[test]
+    fn feature_surcharges_are_added_to_the_base_rate() {
+        let mut req = TranscribeRequest::youtube("dQw4w9WgXcQ");
+        // A bare minute is a minute's worth of credits.
+        assert_eq!(req.estimate_credits(60.0), 60);
+
+        // Diarisation and summary each add 1 per second: 60 * (1 + 1 + 1).
         req.features = vec![TranscriptFeature::Diarization, TranscriptFeature::Summary];
-        assert_eq!(req.estimate_credits(60.0, TranscriptionModel::Weave), 240);
+        assert_eq!(req.estimate_credits(60.0), 180);
 
         // Chapters ride along with the summary pass and cost nothing extra.
         req.features.push(TranscriptFeature::Chapters);
-        assert_eq!(req.estimate_credits(60.0, TranscriptionModel::Weave), 240);
+        assert_eq!(req.estimate_credits(60.0), 180);
     }
 
     #[test]
     fn partial_seconds_round_up_so_media_is_never_billed_short() {
-        assert_eq!(credits_for_media(0.2, TranscriptionModel::Thread), 1);
-        assert_eq!(credits_for_media(59.1, TranscriptionModel::Thread), 60);
-        assert_eq!(credits_for_media(0.0, TranscriptionModel::Thread), 0);
+        assert_eq!(credits_for_media(0.2), 1);
+        assert_eq!(credits_for_media(59.1), 60);
+        assert_eq!(credits_for_media(0.0), 0);
     }
 
     #[test]
     fn balances_render_as_time_not_credits() {
-        // Quoted at the standard rate, so the numbers below are credits and
-        // the strings are the media time they buy on Weave.
+        // A credit is a second, so these read straight across. They did not
+        // before: 90 credits was 45 seconds when the standard rate was two
+        // credits a second.
         assert_eq!(format_credits_as_time(0), "0s");
-        assert_eq!(format_credits_as_time(90), "45s");
-        assert_eq!(format_credits_as_time(120), "1m");
-        assert_eq!(format_credits_as_time(7_200), "1h 0m");
-        assert_eq!(format_credits_as_time(10_080), "1h 24m");
+        assert_eq!(format_credits_as_time(90), "1m");
+        assert_eq!(format_credits_as_time(120), "2m");
+        assert_eq!(format_credits_as_time(3_600), "1h 0m");
+        assert_eq!(format_credits_as_time(5_040), "1h 24m");
         // Negative balances (overdraft) read as empty, not as a negative time.
         assert_eq!(format_credits_as_time(-100), "0s");
     }

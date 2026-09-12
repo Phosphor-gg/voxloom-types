@@ -9,9 +9,6 @@ use serde::{Deserialize, Serialize};
 /// customer by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Entitlement {
-    ThreadModel,
-    WeaveModel,
-    TapestryModel,
     /// Speaker labels via diarisation.
     SpeakerDiarization,
     /// Filler-word and false-start removal.
@@ -40,9 +37,6 @@ impl Entitlement {
     /// The Stripe feature `lookup_key` this maps to.
     pub fn lookup_key(&self) -> &'static str {
         match self {
-            Self::ThreadModel => "thread-model",
-            Self::WeaveModel => "weave-model",
-            Self::TapestryModel => "tapestry-model",
             Self::SpeakerDiarization => "speaker-diarization",
             Self::AiCleanup => "ai-cleanup",
             Self::AiSummary => "ai-summary",
@@ -64,9 +58,6 @@ impl Entitlement {
 
     pub fn all() -> Vec<Entitlement> {
         vec![
-            Self::ThreadModel,
-            Self::WeaveModel,
-            Self::TapestryModel,
             Self::SpeakerDiarization,
             Self::AiCleanup,
             Self::AiSummary,
@@ -83,9 +74,6 @@ impl Entitlement {
     /// Label for a pricing card or a locked-feature tooltip.
     pub fn to_name(&self) -> &'static str {
         match self {
-            Self::ThreadModel => "Thread model",
-            Self::WeaveModel => "Weave model",
-            Self::TapestryModel => "Tapestry model",
             Self::SpeakerDiarization => "Speaker labels",
             Self::AiCleanup => "AI cleanup",
             Self::AiSummary => "AI summary & chapters",
@@ -106,7 +94,7 @@ impl Entitlement {
     /// like every plan, every export format; it is limited by minutes and by
     /// per-video length rather than by feature amputation.
     pub fn free_tier() -> Vec<Entitlement> {
-        vec![Self::ThreadModel, Self::WeaveModel]
+        vec![]
     }
 }
 
